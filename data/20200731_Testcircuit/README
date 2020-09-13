@@ -1,0 +1,199 @@
+2020.07.31
+
+0.TXT~8.TXT(7.TXT 일수도 있음) : 김현성 CIRCUIT DGPS 측정값
+9.TXT~13.TXT : 전재원 CIRCUIT DGPS 측정값
+
+JOGGING으로 6번 뛰었음 (김현성)
+ROUND TURN 2번 WALKING 2번 JOGGING (김현성)
+
+-25 ~ -23, -21 ~ -19 김현성 서킷
+-18 ~ -14 전재원 서킷
+
+-12 ~ -5 김현성 jogging forward
+-4 Walking left
+-3 Walking right
+-2 Jogging right
+-1 Jogging left
+
+
+-------------
+20200825 추가
+여기 있는 Turn 데이터는 트레이닝 했을 때 결과가 잘 나오지 않아서 폐기
+서킷 데이터만 사용
+
+
+
+-------------
+20200906 추가
+
+ DGPS      | EPTS
+2 2381530  | 2381700 -25
+3 2393950  | 2393800 -24
+4 2404880  | 2404900 -23
+6 2421670  | 2421500 -21
+7 2434550  | 2434500 -20
+8 2447830  | 2447800 -19
+
+Init Time
+0: 2381700
+1: 2393950
+2: 2404900
+3: 2421670
+4: 2434550
+5: 2447830
+
+
+-------------
+dir_data = Path('./data/20200731_Testcircuit/')
+#dir_data = Path('./data/20200603_jog_walk')
+f = open(dir_data/'DATA.HEX', 'rb')
+raw = f.read()
+
+packets_raw = divide_epts_packets(raw)
+
+#dump_hex(raw)
+
+df_list = []
+for idx, m in enumerate(packets_raw):
+    df_list.append(parsing_epts_packets(m, dir_data, packet_num=idx, export=1))
+    
+dfs_valid = filter_data(df_list, min_sample_num=1, max_sample_num=np.inf, start_idx=0, end_idx=None)
+#dfs_valid = normalize_imu_data(dfs_valid)
+
+for df in dfs_valid:
+    df.reset_index(drop=True, inplace=True)
+    
+print("Found {} valid packets out of {} packets".format(len(dfs_valid), len(df_list)))
+
+dfs_valid_ = [dfs_valid[-25],dfs_valid[-24],dfs_valid[-23],dfs_valid[-21],dfs_valid[-20],dfs_valid[-19]]
+for i, df in enumerate(dfs_valid_):
+    #print(i)
+    #show_gps(df.dropna(subset=['longitude']), enu_format=1)
+    #print('\n\n\n\n\n')
+    df.to_csv(dir_data / Path('datasets') / f'circuit_{i}.csv', index=False)
+
+
+def parsing_nmea(nmea_file, export_dir='.'):
+    # NMEA parameters
+    nmea_args = {
+        'time':[],
+        'latitude':[], 
+        'longitude':[], 
+        'enu_x':[], 
+        'enu_y':[], 
+        'speed':[], 
+        'course':[], 
+        'altitude':[], 
+        'sat_num':[], 
+        'hdop':[]
+    }
+    df_nmea = pd.read_csv(nmea_file,header=None)
+    df_nmea = df_nmea.drop_duplicates(subset=df_nmea.columns[1])
+    df_dgps = pd.DataFrame.from_dict(nmea_args)
+
+    t = df_nmea.iloc[:,1].to_numpy()*100
+    df_nmea.iloc[:,1] = 360000*((t//1000000)) + 6000*((t//10000)%100) + t%10000;
+    col_time = np.arange(df_nmea.iloc[0,1]*0.1, df_nmea.iloc[-1,1]*0.1)*10
+    df_dgps['time'] = col_time
+    
+    for i in range(len(df_dgps)):
+        row = df_dgps.iloc[i]
+        t = row['time']
+        target = df_nmea[df_nmea.iloc[:,1]==t]
+        if(len(target) > 0):
+            if(target.iloc[0,0] == "$GNRMC"):
+                row.loc[['latitude','longitude','speed','course']]= target.iloc[0,[3,5,7,8]].to_numpy()
+            elif(target.iloc[0,0] == "$GNGGA"):
+                row[['latitude','longitude']]= target.iloc[0,[2,4]]
+            df_dgps.iloc[i] = row
+
+    df_dgps['latitude'] = NMEAtoDeg(df_dgps['latitude'].to_numpy())        
+    df_dgps['longitude'] = NMEAtoDeg(df_dgps['longitude'].to_numpy())       
+    
+    df_dgps[['latitude','longitude','speed']] = df_dgps[['latitude','longitude','speed']].interpolate(method='polynomial', order=2, limit_direction='both')
+    df_dgps['speed'] = df_dgps['speed'].to_numpy()*0.514444
+    
+    x, y, _ = geodetic_to_enu(df_dgps['latitude'], df_dgps['longitude'], np.zeros(df_dgps['latitude'].shape), lat0, lon0, h0)
+    df_dgps['enu_x'] = x
+    df_dgps['enu_y'] = y
+  #  df_dgps[['enu_x','enu_y']] = df_dgps[['enu_x','enu_y']].interpolate(method='polynomial', order=2, limit_direction='both')
+       
+    return df_dgps
+
+
+
+def show_gps_comp(df_epts, df_dgps, idx_start=1, idx_end=None, enu_format=0):
+    
+    dx, dy, _ = geodetic_to_enu(lat0+0.0001,lon0+0.0001,0, lat0, lon0, h0)
+    background_ratio = dy/dx
+    pos_range = [129.3186, 129.3202, 36.0124, 36.0140] # POSTECH Field
+    
+    epts_time = df_epts[['time']][idx_start:idx_end].to_numpy()
+    epts_lat  = df_epts[['latitude']][idx_start:idx_end].to_numpy()
+    epts_lon  = df_epts[['longitude']][idx_start:idx_end].to_numpy()
+    epts_enu_x = df_epts[['enu_x']][idx_start:idx_end].to_numpy()
+    epts_enu_y = df_epts[['enu_y']][idx_start:idx_end].to_numpy()
+    
+    dgps_time = df_dgps[['time']][idx_start:idx_end].to_numpy()
+    dgps_lat  = df_dgps[['latitude']][idx_start:idx_end].to_numpy()
+    dgps_lon  = df_dgps[['longitude']][idx_start:idx_end].to_numpy()
+    dgps_enu_x = df_dgps[['enu_x']][idx_start:idx_end].to_numpy()
+    dgps_enu_y = df_dgps[['enu_y']][idx_start:idx_end].to_numpy()
+    
+    if(enu_format):
+        epts_lat = epts_enu_y
+        epts_lon = epts_enu_x
+        dgps_lat = dgps_enu_y
+        dgps_lon = dgps_enu_x
+    else:
+        #plt.axis(pos_range)
+        img = plt.imread("background2.png")
+        plt.imshow(img, extent=pos_range)
+
+    #for idx, xy in enumerate(zip(lon,lat)):
+    #    if(idx % 10 == 0):
+            #plt.annotate('{}'.format(int(df.index(idx))), xy=xy, textcoords='data')
+    #       plt.annotate('{},{:.3f},{:.3f}'.format(idx, xy[0], xy[1]), xy=xy, textcoords='data')
+
+    plt.plot(epts_lon,epts_lat,'bo', markersize=3, label='GPS Path')
+    plt.plot(dgps_lon,dgps_lat,'ro', markersize=3, label='GPS Path')
+    plt.gca().get_xaxis().get_major_formatter().set_useOffset(False)
+    plt.gca().get_yaxis().get_major_formatter().set_useOffset(False)
+    plt.axes().set_aspect(background_ratio)
+    plt.grid(b=True)
+    plt.xlabel('longitude')
+    plt.ylabel('latitude')
+    plt.legend()
+    plt.show()
+
+
+
+
+dfs_dgps = []
+for i in [2,3,6,7,8]:
+    df_dgps = parsing_nmea(dir_data/(str(i)+'.TXT'))
+    dfs_dgps.append(df_dgps)
+    #show_gps(df_dgps, enu_format=1)
+    #print(df_dgps.head(1))
+    
+    
+dfs_valid_ = [dfs_valid[-25],dfs_valid[-24],dfs_valid[-21],dfs_valid[-20],dfs_valid[-19]]
+
+dfs_epts = dfs_valid_
+
+for i in range(len(dfs_dgps)):
+    df_dgps = dfs_dgps[i]
+    df_epts = dfs_epts[i].dropna(subset=['enu_x'])
+    init_time = np.maximum(df_dgps.time.iloc[0], df_epts.time.iloc[0])
+    end_time = np.minimum(df_dgps.time.iloc[-1], df_epts.time.iloc[-1])
+    print(f"{i}: {end_time}, {df_dgps.time.iloc[-1]}, {df_epts.time.iloc[-1]}")
+    init_idx_dgps = df_dgps[df_dgps.time == init_time].index[0]
+    init_idx_epts = df_epts[df_epts.time == init_time].index[0]
+    end_idx_dgps = df_dgps[df_dgps.time == end_time].index[0]
+    end_idx_epts = df_epts[df_epts.time == end_time].index[0]
+   # print(f"{i}: {idx_dgps}, {idx_epts}")
+    dfs_dgps[i] = df_dgps.loc[init_idx_dgps:end_idx_dgps].reset_index(drop=True)
+    dfs_epts[i] = df_epts.loc[init_idx_epts:end_idx_epts].reset_index(drop=True)
+    
+    show_gps_comp(dfs_epts[i].dropna(subset=['longitude']), dfs_dgps[i].dropna(subset=['longitude']), enu_format=1)
+#    print(f"{dfs_dgps[i].time.loc[0]} {dfs_epts[i].time.loc[0]}")

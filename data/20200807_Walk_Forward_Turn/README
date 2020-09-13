@@ -1,0 +1,108 @@
+걷기 데이터 수집
+
+right/left: 2m 지름의 원형 경로에서 walk. 각각 5분씩 수집
+forward: 축구장 선 따라 walk
+
+dfs_valid[-8]  : walk right
+dfs_valid[-5]  : walk left
+dfs_valid[-4:] : walk forward
+
+
+
+===============
+
+dir_data = Path('./data/20200807_Walk_Forward_Turn/')
+#dir_data = Path('./data/20200603_jog_walk')
+f = open(dir_data/'DATA.HEX', 'rb')
+raw = f.read()
+
+packets_raw = divide_epts_packets(raw)
+
+#dump_hex(raw)
+
+df_list = []
+for idx, m in enumerate(packets_raw):
+    df_list.append(parsing_epts_packets(m, dir_data, packet_num=idx, export=1))
+    
+dfs_valid = filter_data(df_list, min_sample_num=1, max_sample_num=np.inf, start_idx=0, end_idx=None)
+#dfs_valid = normalize_imu_data(dfs_valid)
+show_imu(dfs_valid[-1].loc[:])
+
+for df in dfs_valid:
+    df.reset_index(drop=True, inplace=True)
+    
+print("Found {} valid packets out of {} packets".format(len(dfs_valid), len(df_list)))
+
+dfs_walk_turn = [dfs_valid[-8], dfs_valid[-5]]
+
+divs = []
+
+# CW from four'o clock 
+divs.append([[60.,88.],[54.,94.],[56.,97.],[62.,92.]])
+divs.append([[60.,88.],[54.,94.],[56.,97.],[62.,92.]])
+
+for jdx, df in enumerate(dfs_walk_turn):
+    df_segs_walk_turn = []
+    col_validity = np.zeros(len(df))
+    div = divs[jdx]
+    
+    slope_thr_left = (div[0][1]-div[1][1])/(div[0][0]-div[1][0])
+    slope_thr_right = (div[3][1]-div[2][1])/(div[3][0]-div[2][0])
+    
+    x = df['enu_x'].to_numpy()
+    y = df['enu_y'].to_numpy()
+    
+    slope_left  = (div[0][1]-y)/(div[0][0]-x)
+    slope_right = (div[3][1]-y)/(div[3][0]-x)
+    
+    c = (slope_left>=slope_thr_left) & (slope_left<1.0)
+    col_validity[c] = 1
+    c = (slope_right <= slope_thr_right) & (slope_right < 0)
+    col_validity[c] = 1
+    c = (df['enu_x'].isna())
+    col_validity[c] = np.nan
+    
+    col_validity = pd.Series(col_validity)
+    col_validity.fillna(method='ffill', inplace=True)
+    df['validity'] = col_validity
+    
+    # plot lower-left semi-circle
+    p = df.loc[df['validity'] == 1]
+    x_1 = p.dropna(subset=['longitude'])[['enu_x']].to_numpy()
+    y_1 = p.dropna(subset=['longitude'])[['enu_y']].to_numpy()
+
+
+    p = df.loc[df['validity'] == 0]
+    x_0 = p.dropna(subset=['longitude'])[['enu_x']].to_numpy()
+    y_0 = p.dropna(subset=['longitude'])[['enu_y']].to_numpy()
+
+    plt.figure(idx+1)
+    plt.plot(x_1,y_1,'bo', markersize=3, label='VALID') 
+    plt.plot(x_0,y_0,'ko', markersize=1, label='INVALID')
+    plt.plot([div[0][0],div[1][0]],[div[0][1],div[1][1]], 'k-')
+    plt.plot([div[3][0],div[2][0]],[div[3][1],div[2][1]], 'k-')
+    plt.plot()
+    plt.gca().get_xaxis().get_major_formatter().set_useOffset(False)
+    plt.gca().get_yaxis().get_major_formatter().set_useOffset(False)
+    #plt.axes().set_aspect(background_ratio)
+    plt.grid(b=True)
+    plt.title(jdx)
+    plt.legend()
+    plt.show()
+
+    prev_state = df['validity'].loc[0]
+    for j in range(1,len(df)):
+        current_state = df['validity'].loc[j]
+        if(prev_state==0 and current_state == 1): #begin
+            jdx_start = j
+        elif(prev_state==1 and current_state == 0):  #end
+            df_segs_walk_turn.append(df[jdx_start:j])
+        prev_state = current_state
+    print(len(df_segs_walk_turn))
+    
+    if(jdx==0):
+        for i, df in enumerate(df_segs_walk_turn):
+            df.to_csv(dir_data / Path('datasets') / f'walk_right_{jdx*100+i}.csv', index=False)
+    else:
+        for i, df in enumerate(df_segs_walk_turn):
+            df.to_csv(dir_data / Path('datasets') / f'walk_left_{jdx*100+i}.csv', index=False)
